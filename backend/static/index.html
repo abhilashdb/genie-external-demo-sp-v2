@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Genie Space SP Demo v2 — Agent + Memory</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <!-- Top bar (auth-gated — hidden until the user logs in) -->
+    <header id="topbar" class="topbar topbar-v2" hidden>
+      <div class="topbar-left">
+        <strong class="app-name">Genie SP Demo</strong>
+        <span class="version-badge">V2 · Agent + Memory</span>
+        <span class="topbar-divider">|</span>
+        <span id="user-greeting" class="user-greeting"></span>
+      </div>
+      <div class="topbar-right">
+        <span id="sp-badge" class="sp-badge"></span>
+        <div class="dev-sim">
+          <label for="sim-count" class="dev-sim-label">Simulate 429:</label>
+          <select id="sim-count" class="dev-sim-select">
+            <option value="0">off</option>
+            <option value="1">next 1 attempt</option>
+            <option value="2">next 2 attempts</option>
+            <option value="3" selected>next 3 attempts</option>
+            <option value="5">next 5 attempts</option>
+          </select>
+          <button id="sim-arm-btn" type="button" class="btn btn-ghost btn-sm">Arm</button>
+          <span id="sim-status" class="dev-sim-status"></span>
+        </div>
+        <div class="dev-sim dev-sim-stress">
+          <label for="stress-count" class="dev-sim-label">Real 429 stress:</label>
+          <select id="stress-count" class="dev-sim-select">
+            <option value="5">5 concurrent POSTs</option>
+            <option value="10" selected>10 concurrent POSTs</option>
+            <option value="15">15 concurrent POSTs</option>
+          </select>
+          <button id="stress-btn" type="button" class="btn btn-ghost btn-sm">Fire</button>
+          <span id="stress-status" class="dev-sim-status"></span>
+        </div>
+        <a id="tracing-link" class="btn btn-ghost" href="#" target="_blank" rel="noopener" hidden title="Open the MLflow experiment in a new tab">View traces ↗</a>
+        <button id="logout-btn" class="btn btn-ghost">Logout</button>
+      </div>
+    </header>
+
+    <!-- Global tab bar — always visible, label of tab 1 swaps with auth state -->
+    <nav class="tab-bar" role="tablist" id="global-tabs">
+      <button class="tab active" data-tab="main" role="tab" aria-selected="true" id="tab-main-btn">Sign in</button>
+      <button class="tab" data-tab="arch" role="tab" aria-selected="false">Architecture</button>
+    </nav>
+
+    <!-- ========================================================
+         TAB: MAIN  (either the login form OR the chat layout)
+         ======================================================== -->
+    <section id="tab-main" class="tab-content">
+      <!-- -------- LOGIN SUB-VIEW -------- -->
+      <section id="view-login" class="view view-login">
+        <div class="login-wrap">
+          <header class="login-header">
+            <h1>Genie Space SP Demo <span class="version-badge version-badge-lg">V2</span></h1>
+            <h2>Agent + Memory (LangGraph · Claude · Lakebase)</h2>
+            <p class="subtitle">
+              A demo of <strong>local-login &rarr; SP-token-exchange &rarr; Genie MCP</strong>
+              with per-dealership row-level security. Sign in as one of the seeded users
+              below; the backend will swap your session for a Service Principal M2M token
+              and call Genie on your behalf. Click the <em>Architecture</em> tab to see
+              how it all fits together.
+            </p>
+          </header>
+
+          <div class="login-card">
+            <form id="login-form" class="login-form" autocomplete="off">
+              <label>
+                <span>Username</span>
+                <input type="text" id="login-username" name="username" required autofocus />
+              </label>
+              <label>
+                <span>Password</span>
+                <input type="password" id="login-password" name="password" required />
+              </label>
+              <button type="submit" class="btn btn-primary" id="login-submit">Sign in</button>
+              <div id="login-error" class="login-error" hidden></div>
+            </form>
+          </div>
+
+          <div class="seed-users">
+            <h3>Seed users</h3>
+            <p class="seed-hint">All passwords are <code>demo123</code>.</p>
+            <table class="seed-table">
+              <thead>
+                <tr>
+                  <th>Username</th>
+                  <th>Dealership</th>
+                  <th>Role</th>
+                  <th>SP</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><td>alice</td><td>North Star Motors</td><td>manager</td><td>northstar</td></tr>
+                <tr><td>bob</td><td>North Star Motors</td><td>analyst</td><td>northstar</td></tr>
+                <tr><td>carol</td><td>Sunrise Auto Group</td><td>manager</td><td>sunrise</td></tr>
+                <tr><td>dave</td><td>Sunrise Auto Group</td><td>analyst</td><td>sunrise</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- -------- CHAT SUB-VIEW -------- -->
+      <section id="view-chat" class="view view-chat" hidden>
+        <main class="chat-layout">
+          <!-- History sidebar -->
+          <aside class="history-col">
+            <div class="history-header">
+              <h3>Conversations</h3>
+              <button id="new-chat-btn" type="button" class="btn btn-primary btn-sm">+ New</button>
+            </div>
+            <div id="history-list" class="history-list" aria-live="polite"></div>
+          </aside>
+
+          <!-- Chat column -->
+          <section class="chat-col">
+            <!-- Memory panel: shows current rolling summary + turn count -->
+            <div id="memory-panel" class="memory-panel" hidden>
+              <div class="memory-head">
+                <span class="memory-pill">Memory</span>
+                <span id="memory-stats" class="memory-stats"></span>
+                <button id="reset-genie-btn" type="button" class="btn btn-ghost btn-sm" title="Keep the agent summary but start a fresh Genie conversation on the next data question.">Reset data analysis (Genie)</button>
+              </div>
+              <details id="memory-summary-details">
+                <summary>Rolling summary</summary>
+                <div id="memory-summary" class="memory-summary">(empty — first few turns are kept verbatim)</div>
+              </details>
+            </div>
+            <div id="messages" class="messages" aria-live="polite"></div>
+            <form id="chat-form" class="chat-input">
+              <input
+                type="text"
+                id="chat-text"
+                placeholder="Ask about your dealership's sales, inventory, customers..."
+                autocomplete="off"
+                required
+              />
+              <button type="submit" class="btn btn-primary" id="chat-send">Send</button>
+            </form>
+          </section>
+
+          <!-- Flow pane column -->
+          <aside class="flow-col">
+            <div class="flow-header">
+              <div>
+                <h3>Data Flow</h3>
+                <p class="flow-sub">Live backend transparency (SSE)</p>
+              </div>
+              <button id="flow-clear" class="btn btn-ghost btn-sm">Clear log</button>
+            </div>
+            <div id="flow-events" class="flow-events"></div>
+          </aside>
+        </main>
+      </section>
+    </section>
+
+    <!-- ========================================================
+         TAB: ARCH
+         ======================================================== -->
+    <section id="tab-arch" class="tab-content" hidden>
+      <div class="arch-wrap">
+        <header class="arch-header">
+          <h2>Interaction Flow</h2>
+          <p class="arch-sub">
+            End-to-end path of a chat request — from local user login through
+            service-principal token exchange to RLS-filtered Genie results.
+          </p>
+        </header>
+
+        <div class="arch-grid">
+          <article class="arch-card arch-card-wide">
+            <h3>Sequence (v2: agent + Lakebase memory)</h3>
+            <div class="mermaid" id="diagram-sequence">
+sequenceDiagram
+    autonumber
+    actor User
+    participant UI as Browser UI
+    participant BE as FastAPI Backend
+    participant AG as LangGraph Agent<br/>(Claude via FM API)
+    participant LB as Lakebase<br/>(Postgres checkpointer)
+    participant OIDC as Databricks OIDC
+    participant G as Genie REST API
+    User->>UI: ask a question
+    UI->>BE: POST /api/chat {thread_id, message}
+    BE->>OIDC: client_credentials (SP)
+    OIDC-->>BE: Bearer token (cached)
+    BE->>LB: load checkpoint(thread_id)
+    LB-->>BE: messages + summary + genie_conv_id
+    BE->>AG: graph.ainvoke(state)
+    AG->>AG: load_context (system + summary)
+    AG->>AG: maybe_summarize (if turns>N or tokens>T)
+    AG->>AG: supervisor LLM decides
+    alt needs data
+        AG->>G: start or send-message (sticky conv_id)
+        G-->>AG: text + SQL + rows
+        AG->>AG: supervisor formats final reply
+    end
+    AG->>LB: save checkpoint(thread_id)
+    AG-->>BE: final state
+    BE-->>UI: {answer, sql, rows, summary}
+    BE-->>UI: SSE agent_* + genie_call events
+            </div>
+          </article>
+
+          <article class="arch-card">
+            <h3>Components (v2)</h3>
+            <div class="mermaid" id="diagram-components">
+flowchart LR
+    classDef local fill:#eef2ff,stroke:#6366f1,color:#1e1b4b
+    classDef dbx fill:#fef3c7,stroke:#d97706,color:#78350f
+    classDef data fill:#ecfdf5,stroke:#059669,color:#064e3b
+    classDef sp fill:#f3e8ff,stroke:#7c3aed,color:#3b0764
+    classDef agent fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+
+    subgraph L[Local machine]
+        UI[Browser UI]:::local
+        BE[FastAPI backend]:::local
+        AG[LangGraph supervisor<br/>Claude via FM API]:::agent
+    end
+
+    subgraph D[Databricks e2-demo]
+        OIDC[OIDC token endpoint]:::dbx
+        GENIE[Genie REST API]:::dbx
+        LB[(Lakebase Postgres<br/>checkpoints + app_conversations)]:::data
+        FM[Foundation Model API<br/>Claude endpoint]:::dbx
+        subgraph UC[Unity Catalog genie_demo]
+            direction TB
+            T1[(sales / vehicles / ...)]:::data
+            RLS{{dealership_rls filter}}:::data
+        end
+        SP1[SP northstar]:::sp
+        SP2[SP sunrise]:::sp
+    end
+
+    UI <--> BE
+    BE --> AG
+    AG <--> LB
+    AG --> FM
+    AG --> GENIE
+    BE --> OIDC
+    OIDC -.-> SP1
+    OIDC -.-> SP2
+    GENIE --> UC
+    RLS -.-> T1
+            </div>
+          </article>
+
+          <article class="arch-card arch-notes">
+            <h3>What's new in v2</h3>
+            <ul class="notes-list">
+              <li><strong>Supervisor agent</strong> — Claude (via FM API) sits in front of Genie and decides per turn whether to route the question to Genie or answer directly (greetings, meta questions, clarifications).</li>
+              <li><strong>Two conversation IDs, one thread</strong> — the app <code>thread_id</code> owns the full turn history in Lakebase; the sticky <code>genie_conv_id</code> is reused across follow-ups ("sort by desc") so Genie keeps its native context. A "New topic" button rotates only the Genie side when you pivot subjects.</li>
+              <li><strong>Memory compression</strong> — when the thread exceeds <code>SUMMARY_TURN_THRESHOLD</code> turns or <code>SUMMARY_TOKEN_THRESHOLD</code> tokens, a summarization node folds the older messages into a rolling summary and drops them from state. Summary + recent tail + system prompt is what the LLM sees each turn.</li>
+              <li><strong>Lakebase checkpointer</strong> — LangGraph's <code>AsyncPostgresSaver</code> snapshots state after every node. A server restart doesn't lose a conversation. Your <code>app_conversations</code> pointer table lives in the same DB for sidebar listings.</li>
+              <li><strong>ABAC row-level security</strong> — Genie runs SQL as the per-dealership SP. UC evaluates <code>dealership_rls()</code> per row: an EXISTS subquery against <code>dealership_principals</code> maps the SP's <code>current_user()</code> to its allowed <code>dealership_id</code>. Adding a new dealership is a single INSERT — no function changes.</li>
+            </ul>
+          </article>
+        </div>
+
+        <header class="arch-header" style="margin-top:2.5rem;">
+          <h2>Data Models</h2>
+          <p class="arch-sub">
+            Key entities in Unity Catalog (row-filter protected per dealership) and
+            Lakebase Postgres (conversation memory + LangGraph state).
+          </p>
+        </header>
+        <div class="arch-grid">
+
+          <article class="arch-card arch-card-wide arch-card-er">
+            <h3>UC — Sales &amp; Service (<code>genie_demo</code>)</h3>
+            <div class="mermaid" id="diagram-uc-sales">
+erDiagram
+    DEALERSHIPS {
+        string dealership_id PK
+        string name
+        string region
+    }
+    SALES {
+        string sale_id PK
+        string dealership_id FK
+        date sale_date
+        int sale_price
+        string salesperson
+    }
+    SERVICE_TICKETS {
+        string ticket_id PK
+        string dealership_id FK
+        string status
+        string issue
+        int cost
+    }
+    DEALERSHIP_PRINCIPALS {
+        string principal_id PK
+        string dealership_id FK
+    }
+    DEALERSHIPS ||--o{ SALES : records
+    DEALERSHIPS ||--o{ SERVICE_TICKETS : tracks
+    DEALERSHIPS ||--o{ DEALERSHIP_PRINCIPALS : policy
+            </div>
+          </article>
+
+          <article class="arch-card arch-card-wide arch-card-er">
+            <h3>UC — CRM / Pipeline (<code>genie_crm</code>)</h3>
+            <div class="mermaid" id="diagram-uc-crm">
+erDiagram
+    DEALERSHIPS {
+        string dealership_id PK
+    }
+    LEADS {
+        string lead_id PK
+        string dealership_id FK
+        string stage
+        timestamp last_activity_at
+    }
+    OPPORTUNITIES {
+        string opportunity_id PK
+        string lead_id FK
+        string stage
+        int expected_value_usd
+        date expected_close_date
+    }
+    SALES_TARGETS {
+        string target_id PK
+        string dealership_id FK
+        string salesperson
+        date month
+        int target_revenue_usd
+        int achieved_revenue_usd
+    }
+    FORECASTS {
+        string forecast_id PK
+        string dealership_id FK
+        date month
+        int forecast_revenue_usd
+        int confidence_pct
+    }
+    DEALERSHIPS ||--o{ LEADS : has
+    DEALERSHIPS ||--o{ SALES_TARGETS : targets
+    DEALERSHIPS ||--o{ FORECASTS : forecasts
+    LEADS ||--o{ OPPORTUNITIES : becomes
+            </div>
+          </article>
+
+          <article class="arch-card arch-card-wide arch-card-er">
+            <h3>Lakebase — Postgres</h3>
+            <p class="arch-card-sub">Conversation index for the sidebar + LangGraph state snapshots. Both live in the same Lakebase instance; <code>AsyncPostgresSaver</code> auto-creates the checkpoint tables on startup.</p>
+            <div class="mermaid" id="diagram-lakebase">
+erDiagram
+    app_conversations {
+        text thread_id PK
+        text local_user
+        text sp_label
+        text title
+        text genie_conv_id
+        timestamp last_active_at
+    }
+    checkpoints {
+        text thread_id PK
+        text checkpoint_id PK
+        json checkpoint
+        json metadata
+    }
+    app_conversations ||--o{ checkpoints : thread_id
+            </div>
+          </article>
+
+        </div>
+      </div>
+    </section>
+
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+    <script src="/static/app.js" type="module"></script>
+  </body>
+</html>
